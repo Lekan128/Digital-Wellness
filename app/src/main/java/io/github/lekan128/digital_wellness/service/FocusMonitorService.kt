@@ -12,10 +12,13 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import io.github.lekan128.digital_wellness.MainActivity
 import io.github.lekan128.digital_wellness.R
 import io.github.lekan128.digital_wellness.data.SettingsManager
+import io.github.lekan128.digital_wellness.data.TrackingStateStore
 import io.github.lekan128.digital_wellness.ui.overlay.OverlayManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +33,7 @@ class FocusMonitorService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pollingJob: Job? = null
+    private val handler = Handler(Looper.getMainLooper())
     
     // Polling optimization: variables declared outside the loop
     private var currentPackage: String = ""
@@ -41,9 +45,17 @@ class FocusMonitorService : Service() {
     private lateinit var settingsManager: SettingsManager
     private lateinit var overlayManager: OverlayManager
     private lateinit var usageStatsManager: UsageStatsManager
+    private lateinit var stateStore: TrackingStateStore
 
     private val CHANNEL_ID = "FocusMonitorChannel"
+    private val ALERT_CHANNEL_ID = "FocusAlertChannel"
     private val NOTIFICATION_ID = 1234
+    private val ALERT_NOTIFICATION_ID = 9999
+    private val ACTION_DISMISS = "io.github.lekan128.digital_wellness.ACTION_DISMISS"
+    
+    companion object {
+        const val ACTION_START_MONITORING = "io.github.lekan128.digital_wellness.ACTION_START_MONITORING"
+    }
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -58,8 +70,10 @@ class FocusMonitorService : Service() {
         super.onCreate()
         settingsManager = SettingsManager(applicationContext)
         overlayManager = OverlayManager(applicationContext)
+        stateStore = TrackingStateStore(applicationContext)
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        createNotificationChannel() // Ensure channel exists early
+        createNotificationChannel() 
+        createAlertChannel() // Create the high priority channel
 
         // Observe settings updates
         serviceScope.launch {
@@ -80,6 +94,16 @@ class FocusMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_DISMISS) {
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.cancel(ALERT_NOTIFICATION_ID)
+            // Also reset usage to allow user to continue if they wish, or it's already reset in checkUsage
+             currentUsageDuration = 0
+             // Save cleared state
+             stateStore.saveState(true, lastPackage, 0)
+            return START_STICKY
+        }
+
         createNotificationChannel()
         val notification = createNotification()
         if (Build.VERSION.SDK_INT >= 34) {
@@ -88,19 +112,56 @@ class FocusMonitorService : Service() {
             startForeground(NOTIFICATION_ID, notification)
         }
 
+        // Restore State if valid
+        val restored = stateStore.restoreState()
+        
+        val isManualStart = intent?.action == ACTION_START_MONITORING
+        
+        // Condition 1: Was Monitoring? (Skip check if manual start)
+        if (!isManualStart && !restored.isMonitoring) {
+            stopSelf()
+            return START_NOT_STICKY 
+        }
+
+        // Condition 2: Is Session Valid?
+        if (isManualStart) {
+            // Fresh start
+            lastPackage = ""
+            currentUsageDuration = 0
+            stateStore.saveState(true, "", 0)
+        } else {
+            val timeGap = System.currentTimeMillis() - restored.lastUpdateTimestamp
+            // Need to check current app to validate session
+            val currentApp = determineForegroundApp()
+            
+            if (timeGap < 3 * 60 * 1000 && currentApp == restored.lastPackageName) {
+                // User is still in the same session
+                lastPackage = restored.lastPackageName
+                currentUsageDuration = restored.currentConsecutiveTime
+            } else {
+                // Reset if session invalid or too old
+                lastPackage = "" 
+                currentUsageDuration = 0
+            }
+        }
+
         startPolling()
         
         return START_STICKY
     }
+    
+    // ... polling methods ...
 
     private fun startPolling() {
         if (pollingJob?.isActive == true) return
         
         pollingJob = serviceScope.launch {
-            // Polling Loop
             while (true) {
                 checkUsage()
-                delay(5000) // Poll every 5 seconds
+                // Save state after check
+                // We assume isMonitoring is true since service is running
+                stateStore.saveState(true, lastPackage, currentUsageDuration)
+                delay(5000) 
             }
         }
     }
@@ -109,52 +170,71 @@ class FocusMonitorService : Service() {
         pollingJob?.cancel()
     }
 
-    // Logic for checking usage
-    private fun checkUsage() {
+    private fun determineForegroundApp(): String {
         val time = System.currentTimeMillis()
-        // Query last 10 seconds to ensure we catch the current foreground app
-        val stats = usageStatsManager.queryUsageStats(
-            UsageStatsManager.INTERVAL_DAILY,
-            time - 1000 * 10,
-            time
-        )
-
-        // Efficiently find the most recent app
-        val recentStat = stats.maxByOrNull { it.lastTimeUsed }
+        val events = usageStatsManager.queryEvents(time - 5 * 60 * 1000, time)
         
-        currentPackage = recentStat?.packageName ?: return
+        var detectedPackage = ""
+        val event = android.app.usage.UsageEvents.Event() 
 
-        // Core Tracking Logic
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            if (event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND) {
+               detectedPackage = event.packageName
+            }
+        }
+        return detectedPackage
+    }
+
+    private fun checkUsage() {
+        currentPackage = determineForegroundApp()
+        
+        if (currentPackage.isEmpty()) return
+
         if (selectedApps.contains(currentPackage)) {
             if (currentPackage == lastPackage) {
-                // Continued usage
                 currentUsageDuration += 5000
                 if (currentUsageDuration >= limitDurationMillis) {
                     val durationMins = (currentUsageDuration / 60000).toInt()
-                    launchOverlay(durationMins)
-                    currentUsageDuration = 0 // Reset immediately to prevent loop spam while overlay is looking
+                    // Replacing overlay launch with Notification
+                    sendTimeUpNotification(durationMins)
+                    currentUsageDuration = 0 
                 }
             } else {
-                // Switched TO a monitoring app from another (or nothing)
                 lastPackage = currentPackage
                 currentUsageDuration = 0
             }
         } else {
-            // Not a monitored app
             lastPackage = ""
             currentUsageDuration = 0
         }
     }
 
-    private fun launchOverlay(minutes: Int) {
-        serviceScope.launch(Dispatchers.Main) {
-            overlayManager.showTimeUpOverlay(minutes) {
-                // Actions when dismissed
-                // Since we reset currentUsageDuration to 0 in checkUsage() already,
-                // the user can continue and it starts counting from 0.
-            }
+    // New Function
+    private fun sendTimeUpNotification(minutes: Int) {
+        val dismissIntent = Intent(this, FocusMonitorService::class.java).apply {
+            action = ACTION_DISMISS
         }
+        val dismissPendingIntent = PendingIntent.getService(
+            this, 0, dismissIntent, PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
+            .setContentTitle("Digital Wellness Alert")
+            .setContentText("Time's Up! You've successfully focused for $minutes minutes.")
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setAutoCancel(true)
+            .addAction(R.drawable.ic_launcher_foreground, "Dismiss", dismissPendingIntent) // Reuse icon for action
+            .build()
+
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(ALERT_NOTIFICATION_ID, notification)
     }
+
+    // Deprecated/Removed
+    // private fun launchOverlay(minutes: Int) { ... }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -163,6 +243,35 @@ class FocusMonitorService : Service() {
                 "Focus Monitor Service",
                 NotificationManager.IMPORTANCE_LOW
             )
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun createAlertChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                ALERT_CHANNEL_ID,
+                "Focus Alert",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "High priority alerts for focus usage limits"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 1000)
+                
+                // Sound logic
+                val audioAttributes = android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_ALARM)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+                
+                // Use default alarm sound since custom resource doesn't exist yet
+                setSound(android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM), audioAttributes)
+                
+                // Bypass DND if permission granted (requires manual user implementation but we set flag)
+                setBypassDnd(true)
+            }
+            
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
         }
@@ -179,7 +288,7 @@ class FocusMonitorService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Focus Monitor is running")
             .setContentText("Tracking your digital wellbeing.")
-            .setSmallIcon(R.drawable.ic_launcher_foreground) // Using our custom icon
+            .setSmallIcon(R.drawable.ic_launcher_foreground) 
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
