@@ -10,6 +10,12 @@ import io.github.lekan128.digital_wellness.data.AppRepository
 import io.github.lekan128.digital_wellness.data.SettingsManager
 import io.github.lekan128.digital_wellness.service.FocusMonitorService
 import io.github.lekan128.digital_wellness.util.PermissionUtils
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import io.github.lekan128.digital_wellness.worker.ServiceCheckWorker
+import java.util.concurrent.TimeUnit
+import io.github.lekan128.digital_wellness.data.TrackingStateStore
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -86,10 +92,36 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
             // Stop
             context.stopService(Intent(context, FocusMonitorService::class.java))
             viewModelScope.launch { settingsManager.setMonitoringEnabled(false) }
+            
+            // Clear tracking state
+            TrackingStateStore(context).clearState()
+            
+            // Cancel Safety Net
+            WorkManager.getInstance(context).cancelUniqueWork("FocusSafetyNet")
         } else {
             // Start
-            startFocusService(context)
+            // Synchronously set monitoring true so service doesn't kill itself
+            TrackingStateStore(context).saveState(true, "", 0)
+            
+            val intent = android.content.Intent(context, FocusMonitorService::class.java).apply {
+                action = FocusMonitorService.ACTION_START_MONITORING
+            }
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
             viewModelScope.launch { settingsManager.setMonitoringEnabled(true) }
+            
+            // Schedule Safety Net (Every 15 mins)
+            val request = PeriodicWorkRequestBuilder<ServiceCheckWorker>(15, TimeUnit.MINUTES)
+                .build()
+                
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+                "FocusSafetyNet",
+                ExistingPeriodicWorkPolicy.KEEP, 
+                request
+            )
         }
     }
     
