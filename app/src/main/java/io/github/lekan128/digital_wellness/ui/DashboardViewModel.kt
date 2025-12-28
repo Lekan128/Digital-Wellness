@@ -101,7 +101,7 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         } else {
             // Start
             // Synchronously set monitoring true so service doesn't kill itself
-            TrackingStateStore(context).saveState(true, "", 0)
+            TrackingStateStore(context).saveState("", 0)
             
             val intent = android.content.Intent(context, FocusMonitorService::class.java).apply {
                 action = FocusMonitorService.ACTION_START_MONITORING

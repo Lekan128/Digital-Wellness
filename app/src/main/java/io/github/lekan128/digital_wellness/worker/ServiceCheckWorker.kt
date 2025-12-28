@@ -16,11 +16,11 @@ class ServiceCheckWorker(
 
     override fun doWork(): Result {
         val context = applicationContext
-        val stateStore = TrackingStateStore(context)
-        val state = stateStore.restoreState()
+//        val stateStore = TrackingStateStore(context)
+//        val state = stateStore.restoreState()
 
         // 1. Should we be monitoring?
-        if (state.isMonitoring) {
+//        if (state.isMonitoring) {
             // 2. Is the service running?
             if (!isServiceRunning(context, FocusMonitorService::class.java)) {
                 // 3. Restart Service
@@ -31,7 +31,7 @@ class ServiceCheckWorker(
                     context.startService(intent)
                 }
             }
-        }
+//        }
 
         return Result.success()
     }
