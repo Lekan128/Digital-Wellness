@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.github.lekan128.digital_wellness.MainActivity
 import io.github.lekan128.digital_wellness.R
@@ -26,7 +27,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class FocusMonitorService : Service() {
@@ -36,11 +36,14 @@ class FocusMonitorService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     
     // Polling optimization: variables declared outside the loop
-    private var currentPackage: String = ""
-    private var lastPackage: String = ""
+//    private var currentPackage: String = ""
+    private var lastDetectedTrackablePackage: String = ""
     private var currentUsageDuration: Long = 0L
     private var limitDurationMillis: Long = 20 * 60 * 1000L // Default 20 mins
     private var selectedApps: Set<String> = emptySet()
+    
+    // Sticky Foreground Package
+//    private var detectedForegroundPackage: String? = null
     
     private lateinit var settingsManager: SettingsManager
     private lateinit var overlayManager: OverlayManager
@@ -100,7 +103,7 @@ class FocusMonitorService : Service() {
             // Also reset usage to allow user to continue if they wish, or it's already reset in checkUsage
              currentUsageDuration = 0
              // Save cleared state
-             stateStore.saveState(true, lastPackage, 0)
+             stateStore.saveState(lastDetectedTrackablePackage, 0)
             return START_STICKY
         }
 
@@ -114,33 +117,37 @@ class FocusMonitorService : Service() {
 
         // Restore State if valid
         val restored = stateStore.restoreState()
+        lastDetectedTrackablePackage = restored.lastDetectedPackageName
         
         val isManualStart = intent?.action == ACTION_START_MONITORING
         
         // Condition 1: Was Monitoring? (Skip check if manual start)
-        if (!isManualStart && !restored.isMonitoring) {
-            stopSelf()
-            return START_NOT_STICKY 
-        }
+//        if (!isManualStart
+////            && !restored.isMonitoring
+//            ) {
+//            stopSelf()
+//            return START_NOT_STICKY
+//        }
 
         // Condition 2: Is Session Valid?
         if (isManualStart) {
             // Fresh start
-            lastPackage = ""
+            lastDetectedTrackablePackage = ""
             currentUsageDuration = 0
-            stateStore.saveState(true, "", 0)
+            stateStore.saveState(lastDetectedTrackablePackage, 0)
         } else {
             val timeGap = System.currentTimeMillis() - restored.lastUpdateTimestamp
             // Need to check current app to validate session
             val currentApp = determineForegroundApp()
-            
-            if (timeGap < 3 * 60 * 1000 && currentApp == restored.lastPackageName) {
+
+            if (timeGap < 4 * 60 * 1000 && currentApp == restored.lastDetectedPackageName) {
+                // If it's been less than 4 minutes since the last check and the user is still on the same app
                 // User is still in the same session
-                lastPackage = restored.lastPackageName
+                lastDetectedTrackablePackage = restored.lastDetectedPackageName //maybe just leave these 2
                 currentUsageDuration = restored.currentConsecutiveTime
             } else {
                 // Reset if session invalid or too old
-                lastPackage = "" 
+                lastDetectedTrackablePackage = ""
                 currentUsageDuration = 0
             }
         }
@@ -153,6 +160,7 @@ class FocusMonitorService : Service() {
     // ... polling methods ...
 
     private fun startPolling() {
+        Log.i("checkUsage", "startPolling ")
         if (pollingJob?.isActive == true) return
         
         pollingJob = serviceScope.launch {
@@ -160,39 +168,63 @@ class FocusMonitorService : Service() {
                 checkUsage()
                 // Save state after check
                 // We assume isMonitoring is true since service is running
-                stateStore.saveState(true, lastPackage, currentUsageDuration)
+                stateStore.saveState(lastDetectedTrackablePackage, currentUsageDuration)
                 delay(5000) 
             }
         }
     }
 
     private fun stopPolling() {
+        Log.i("checkUsage", "stopPolling: screen off ")
         pollingJob?.cancel()
     }
 
-    private fun determineForegroundApp(): String {
+    private fun determineForegroundApp(): String? {
         val time = System.currentTimeMillis()
         val events = usageStatsManager.queryEvents(time - 5 * 60 * 1000, time)
         
-        var detectedPackage = ""
+        var detectedPackage: String? = null
         val event = android.app.usage.UsageEvents.Event() 
 
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
-            if (event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND) {
+            if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) {
                detectedPackage = event.packageName
+            } else if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_PAUSED) {
+                if (event.packageName == detectedPackage) {
+                    detectedPackage = null
+                }
             }
         }
         return detectedPackage
     }
 
     private fun checkUsage() {
-        currentPackage = determineForegroundApp()
-        
-        if (currentPackage.isEmpty()) return
+        val newEventPackage = determineForegroundApp() ?: lastDetectedTrackablePackage
 
-        if (selectedApps.contains(currentPackage)) {
-            if (currentPackage == lastPackage) {
+
+//        currentPackage = newEventPackage ?: lastDetectedTrackablePackage
+
+        if (newEventPackage.isEmpty()) return
+
+        // If it's not an app we care about, reset and exit
+        if (!selectedApps.contains(newEventPackage)){
+            lastDetectedTrackablePackage = ""
+            currentUsageDuration = 0
+            return
+        }
+
+        // If the app changed, reset the timer for the new app
+        if (newEventPackage != lastDetectedTrackablePackage){
+            lastDetectedTrackablePackage = newEventPackage
+            currentUsageDuration = 0
+            return
+        }
+
+        Log.i("checkUsage",
+            "current: $newEventPackage, last: $lastDetectedTrackablePackage time: " + ((currentUsageDuration + 5000)/(1000*60))
+        )
+
                 currentUsageDuration += 5000
                 if (currentUsageDuration >= limitDurationMillis) {
                     val durationMins = (currentUsageDuration / 60000).toInt()
@@ -200,14 +232,7 @@ class FocusMonitorService : Service() {
                     sendTimeUpNotification(durationMins)
                     currentUsageDuration = 0 
                 }
-            } else {
-                lastPackage = currentPackage
-                currentUsageDuration = 0
-            }
-        } else {
-            lastPackage = ""
-            currentUsageDuration = 0
-        }
+
     }
 
     // New Function
@@ -221,7 +246,7 @@ class FocusMonitorService : Service() {
 
         val notification = NotificationCompat.Builder(this, ALERT_CHANNEL_ID)
             .setContentTitle("Digital Wellness Alert")
-            .setContentText("Time's Up! You've successfully focused for $minutes minutes.")
+            .setContentText("Time's Up! You've successfully used $minutes minutes on this app.")
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
@@ -291,6 +316,7 @@ class FocusMonitorService : Service() {
             .setSmallIcon(R.drawable.ic_launcher_foreground) 
             .setContentIntent(pendingIntent)
             .setOngoing(true)
+            .setAutoCancel(false)
             .build()
     }
 
