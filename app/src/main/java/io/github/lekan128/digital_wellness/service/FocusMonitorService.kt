@@ -20,7 +20,6 @@ import io.github.lekan128.digital_wellness.MainActivity
 import io.github.lekan128.digital_wellness.R
 import io.github.lekan128.digital_wellness.data.SettingsManager
 import io.github.lekan128.digital_wellness.data.TrackingStateStore
-import io.github.lekan128.digital_wellness.ui.overlay.OverlayManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -46,7 +45,6 @@ class FocusMonitorService : Service() {
 //    private var detectedForegroundPackage: String? = null
     
     private lateinit var settingsManager: SettingsManager
-    private lateinit var overlayManager: OverlayManager
     private lateinit var usageStatsManager: UsageStatsManager
     private lateinit var stateStore: TrackingStateStore
 
@@ -72,7 +70,6 @@ class FocusMonitorService : Service() {
     override fun onCreate() {
         super.onCreate()
         settingsManager = SettingsManager(applicationContext)
-        overlayManager = OverlayManager(applicationContext)
         stateStore = TrackingStateStore(applicationContext)
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
         createNotificationChannel() 

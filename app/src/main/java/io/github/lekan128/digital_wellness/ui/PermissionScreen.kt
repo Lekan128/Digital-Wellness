@@ -51,7 +51,6 @@ import io.github.lekan128.digital_wellness.ui.theme.TeaGreen
 
 enum class PermissionType {
     USAGE_STATS,
-    OVERLAY,
     BATTERY_OPTIMIZATION,
     NOTIFICATIONS
 }
@@ -103,21 +102,6 @@ fun PermissionScreen(
                             buttonText = "Grant Access",
                             onClick = {
                                 val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
-                                context.startActivity(intent)
-                            }
-                        )
-                    }
-                    PermissionType.OVERLAY -> {
-                        PermissionCard(
-                            title = "Display Over Other Apps",
-                            description = "Required to show the timer popup when you exceed your limit.",
-                            icon = Icons.Default.List,
-                            buttonText = "Enable Overlay",
-                            onClick = {
-                                val intent = Intent(
-                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:${context.packageName}")
-                                )
                                 context.startActivity(intent)
                             }
                         )
