@@ -14,6 +14,10 @@ import android.os.Build
 import android.os.IBinder
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
+import android.media.RingtoneManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import io.github.lekan128.digital_wellness.MainActivity
@@ -41,6 +45,10 @@ class FocusMonitorService : Service() {
     private var limitDurationMillis: Long = 20 * 60 * 1000L // Default 20 mins
     private var selectedApps: Set<String> = emptySet()
     
+    // Settings
+    private var isSoundEnabled: Boolean = true
+    private var isVibrationEnabled: Boolean = true
+    
     // Sticky Foreground Package
 //    private var detectedForegroundPackage: String? = null
     
@@ -49,7 +57,7 @@ class FocusMonitorService : Service() {
     private lateinit var stateStore: TrackingStateStore
 
     private val CHANNEL_ID = "FocusMonitorChannel"
-    private val ALERT_CHANNEL_ID = "FocusAlertChannel"
+    private val ALERT_CHANNEL_ID = "FocusAlertChannel_Dynamic" // New ID for dynamic settings
     private val NOTIFICATION_ID = 1234
     private val ALERT_NOTIFICATION_ID = 9999
     private val ACTION_DISMISS = "io.github.lekan128.digital_wellness.ACTION_DISMISS"
@@ -72,7 +80,7 @@ class FocusMonitorService : Service() {
         settingsManager = SettingsManager(applicationContext)
         stateStore = TrackingStateStore(applicationContext)
         usageStatsManager = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        createNotificationChannel() 
+        createMonitoringNotificationChannel()
         createAlertChannel() // Create the high priority channel
 
         // Observe settings updates
@@ -83,6 +91,12 @@ class FocusMonitorService : Service() {
             settingsManager.notificationPeriod.collect { mins ->
                 limitDurationMillis = (mins * 60 * 1000).toLong()
             }
+        }
+        serviceScope.launch {
+            settingsManager.soundEnabled.collect { isSoundEnabled = it }
+        }
+        serviceScope.launch {
+            settingsManager.vibrationEnabled.collect { isVibrationEnabled = it }
         }
 
         // Register Screen Receiver
@@ -104,7 +118,7 @@ class FocusMonitorService : Service() {
             return START_STICKY
         }
 
-        createNotificationChannel()
+        createMonitoringNotificationChannel()
         val notification = createNotification()
         if (Build.VERSION.SDK_INT >= 34) {
             startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -253,12 +267,37 @@ class FocusMonitorService : Service() {
 
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(ALERT_NOTIFICATION_ID, notification)
+        
+        // Manual Sound & Vibration Logic
+        if (isSoundEnabled) {
+            try {
+                val notificationUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                val r = RingtoneManager.getRingtone(applicationContext, notificationUri)
+                r.play()
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        
+        if (isVibrationEnabled) {
+             val vibrator = if (Build.VERSION.SDK_INT >= 31) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vibratorManager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            
+            if (Build.VERSION.SDK_INT >= 26) {
+                vibrator.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 500, 200, 500, 200, 1000), -1))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(longArrayOf(0, 500, 200, 500, 200, 1000), -1)
+            }
+        }
     }
 
-    // Deprecated/Removed
-    // private fun launchOverlay(minutes: Int) { ... }
-
-    private fun createNotificationChannel() {
+    private fun createMonitoringNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -278,20 +317,8 @@ class FocusMonitorService : Service() {
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "High priority alerts for focus usage limits"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 500, 200, 500, 200, 1000)
-                
-                // Sound logic
-                val audioAttributes = android.media.AudioAttributes.Builder()
-                    .setUsage(android.media.AudioAttributes.USAGE_ALARM)
-                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-                
-                // Use default alarm sound since custom resource doesn't exist yet
-                setSound(android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_ALARM), audioAttributes)
-                
-                // Bypass DND if permission granted (requires manual user implementation but we set flag)
-                setBypassDnd(true)
+                enableVibration(false) // Handle manually
+                setSound(null, null) // Handle manually
             }
             
             val manager = getSystemService(NotificationManager::class.java)
