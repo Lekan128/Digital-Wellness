@@ -60,7 +60,12 @@ dependencies {
     implementation(libs.androidx.material3)
     implementation(libs.material)
     implementation(libs.androidx.appcompat)
-    
+
+    implementation(libs.androidx.navigation.compose)
+
+    implementation(libs.androidx.compose.material.icons.extended)
+
+
     // DataStore
     implementation(libs.androidx.datastore.preferences)
 

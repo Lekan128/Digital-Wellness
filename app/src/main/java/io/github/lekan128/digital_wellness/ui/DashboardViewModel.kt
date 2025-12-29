@@ -69,9 +69,6 @@ class DashboardViewModel(application: Application) : AndroidViewModel(applicatio
         if (!PermissionUtils.hasUsageStatsPermission(context)) {
             missing.add(PermissionType.USAGE_STATS)
         }
-        if (!PermissionUtils.hasOverlayPermission(context)) {
-            missing.add(PermissionType.OVERLAY)
-        }
         if (!PermissionUtils.isIgnoringBatteryOptimizations(context)) {
             missing.add(PermissionType.BATTERY_OPTIMIZATION)
         }

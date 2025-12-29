@@ -19,5 +19,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Digital Wellness"
+rootProject.name = "Digital Alertness"
 include(":app")
