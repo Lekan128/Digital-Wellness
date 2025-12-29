@@ -40,6 +40,7 @@ import coil.compose.rememberAsyncImagePainter
 import io.github.lekan128.digital_wellness.data.AppInfo
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -50,12 +51,12 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
-    viewModel: DashboardViewModel = viewModel()
+    viewModel: DashboardViewModel = viewModel(),
+    onNavigateToSettings: () -> Unit
 ) {
     val apps by viewModel.sortedApps.collectAsState()
     val isMonitoring by viewModel.isMonitoring.collectAsState()
     val selectedApps by viewModel.selectedApps.collectAsState()
-    val notificationPeriod by viewModel.notificationPeriod.collectAsState()
     val missingPermissions by viewModel.missingPermissions.collectAsState()
 
     // Trigger auto-selection once apps are loaded
@@ -89,6 +90,14 @@ fun DashboardScreen(
             topBar = {
                 TopAppBar(
                     title = { Text("Digital Wellness", fontWeight = FontWeight.Bold) },
+                    actions = {
+                        androidx.compose.material3.IconButton(onClick = onNavigateToSettings) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = "Settings"
+                            )
+                        }
+                    },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background,
                         titleContentColor = MaterialTheme.colorScheme.primary
@@ -103,42 +112,7 @@ fun DashboardScreen(
                     .padding(innerPadding)
                     .padding(16.dp)
             ) {
-                // Notification Period Section
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Text(
-                            text = "Notification Period",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Notify me after ${notificationPeriod.toInt()} minutes of consecutive use.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                        )
-                        Slider(
-                            value = notificationPeriod,
-                            onValueChange = { viewModel.updateNotificationPeriod(it) },
-                            valueRange = 5f..120f,
-                            steps = 22,
-                            colors = SliderDefaults.colors(
-                                thumbColor = MaterialTheme.colorScheme.primary,
-                                activeTrackColor = MaterialTheme.colorScheme.primary,
-                                inactiveTrackColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.5f)
-                            )
-                        )
-                    }
-                }
 
-                Spacer(modifier = Modifier.height(24.dp))
 
                 Button(
                     onClick = { viewModel.toggleService() },
